@@ -90,26 +90,16 @@ def reset(fault: str):
 @router.post("/reset-all")
 def reset_all():
     capture_baselines()
-    client = FlagdClient()
-    try:
-        flags = client.get_flags()
-    except Exception as e:
-        raise HTTPException(500, str(e))
-    n = 0
-    for key in flags:
-        base = get_baseline(key)
-        if base is None:
-            continue
-        cur = flags[key].get("defaultVariant")
-        if str(cur) == str(base):
-            continue
-        try:
-            client.reset_flag(key, base)
-            record_control_event(key, "reset", cur, base, True)
-            n += 1
-        except Exception as e:
-            record_control_event(key, "reset", cur, base, False, error=str(e))
-    return {"reset": n}
+    from eyes_core.approval import propose
+    proposal = propose(
+        action="reset_all_faults",
+        target="all",
+        params={},
+        reason="Reset all flags back to baseline",
+        risk="high",
+        reversible=True,
+    )
+    return {"approval_required": True, "approval": proposal}
 
 @router.post("/{fault}/run")
 def run_fault(fault: str, duration: int = 30, variant: str | None = None):

@@ -48,7 +48,7 @@ def set_kill_switch(enabled: bool, reason: str | None = None) -> None:
         insert("kill_switch", {"id": 1, "enabled": 1 if enabled else 0, "reason": reason, "updated_ts": now_iso()})
     else:
         update("kill_switch", {"enabled": 1 if enabled else 0, "reason": reason, "updated_ts": now_iso()}, "id=1")
-    audit("kill_switch", None, "system", None, None, "kill_switch", "system", {"enabled": enabled, "reason": reason}, "success")
+    audit("kill_switch", None, "kill_switch", "system", "operator", {"enabled": enabled, "reason": reason}, "success")
 
 def audit(event_type, approval_id, action, target, actor, detail, outcome) -> None:
     insert("audit_log", {
@@ -110,6 +110,9 @@ def approve(approval_id: str, actor: str = "human") -> dict:
     a = get_approval(approval_id)
     if not a:
         raise ValueError("Approval not found")
+    if str(actor).lower().strip() in ("system", "agent", "llm", "ai", "bot", "automated"):
+        audit("approval_blocked", approval_id, a["action"], a["target"], actor, {"reason": "agent cannot approve own action"}, "blocked")
+        raise ValueError("Agent or system cannot approve actions; explicit human approval required")
     if a["status"] != "pending":
         raise ValueError(f"Approval not pending: {a['status']}")
     # check expiry

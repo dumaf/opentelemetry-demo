@@ -12,6 +12,25 @@ Rules:
 - Admit uncertainty; set status appropriately (confirmed/hypothesized/unresolved).
 - Assign confidence 0.0-1.0 and explain it.
 - Output valid JSON matching the required schema exactly. No markdown fences.
+- Your response must be a single JSON object with EXACTLY the keys shown in the schema below. Do not omit any key.
+
+Required JSON Schema:
+{
+  "incident_id": "<string: the incident id provided>",
+  "detection_mode": "<string: detection mode provided>",
+  "summary": "<string: brief summary of what happened>",
+  "affected_services": ["<string: service names affected>"],
+  "symptoms": [{"description": "<string>", "evidence_refs": ["E1"]}],
+  "root_cause": {"description": "<string>", "status": "<confirmed|hypothesized|unresolved>", "evidence_refs": ["E1"]},
+  "causal_analysis": [{"claim": "<string>", "reasoning": "<string>", "evidence_refs": ["E1"]}],
+  "timeline": [{"timestamp": "<ISO 8601>", "event": "<string>", "evidence_refs": ["E1"]}],
+  "confidence": {"score": 0.5, "rationale": "<string explaining score>"},
+  "alternative_hypotheses": [{"description": "<string>", "supporting_evidence": [], "contradicting_evidence": []}],
+  "missing_evidence": ["<string: what data would help>"],
+  "recommended_next_steps": ["<string: actionable next step>"],
+  "telemetry_sources": ["<string: which telemetry backends were used>"],
+  "llm_metadata": {"provider": "<string>", "model": "<string>"}
+}
 """
 
 REQUIRED_KEYS = [
@@ -26,17 +45,19 @@ def build_user_prompt(incident: dict, bundle: dict, detection_mode: str) -> str:
         f"Incident ID: {incident.get('id')}\n"
         f"Detection time: {incident.get('detection_ts')}\n"
         f"Detection mode: {detection_mode}\n"
+        f"Affected services: {incident.get('affected_services')}\n"
         f"Triggering signals: {incident.get('triggering_signals')}\n\n"
-        "Return a JSON object with these keys:\n"
-        "incident_id, detection_mode, summary, affected_services (list),\n"
-        "symptoms (list of {description, evidence_refs}),\n"
-        "root_cause ({description, status, evidence_refs}) where status in [confirmed,hypothesized,unresolved],\n"
-        "causal_analysis (list of {claim, reasoning, evidence_refs}),\n"
-        "timeline (list of {timestamp, event, evidence_refs}),\n"
-        "confidence ({score 0-1, rationale}),\n"
-        "alternative_hypotheses (list of {description, supporting_evidence, contradicting_evidence}),\n"
-        "missing_evidence (list), recommended_next_steps (list), telemetry_sources (list),\n"
-        "llm_metadata ({provider, model}).\n\n"
+        "IMPORTANT: Your response MUST be a single valid JSON object with ALL of these top-level keys:\n"
+        "incident_id, detection_mode, summary, affected_services (array of strings),\n"
+        "symptoms (array of {description, evidence_refs}),\n"
+        "root_cause ({description, status, evidence_refs}) where status is one of: confirmed, hypothesized, unresolved,\n"
+        "causal_analysis (array of {claim, reasoning, evidence_refs}),\n"
+        "timeline (array of {timestamp, event, evidence_refs}),\n"
+        "confidence ({score: number 0-1, rationale: string}),\n"
+        "alternative_hypotheses (array of {description, supporting_evidence, contradicting_evidence}),\n"
+        "missing_evidence (array of strings), recommended_next_steps (array of strings),\n"
+        "telemetry_sources (array of strings),\n"
+        "llm_metadata ({provider: string, model: string}).\n\n"
         f"Evidence bundle JSON:\n{json.dumps(bundle, default=str)[:14000]}\n\n"
-        "Return JSON only."
+        "Return ONLY the JSON object. No markdown, no explanation, no code fences. Every key listed above MUST be present."
     )

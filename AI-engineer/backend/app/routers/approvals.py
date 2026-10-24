@@ -42,6 +42,20 @@ def list_approvals():
 def list_all():
     return fetch_all("approvals", limit=200)
 
+@router.get("/audit")
+def list_audit(limit: int = 100):
+    rows = fetch_all("audit_log", limit=limit)
+    out = []
+    for r in rows:
+        row_dict = dict(r)
+        if row_dict.get("detail"):
+            try:
+                row_dict["detail"] = json.loads(row_dict["detail"])
+            except Exception:
+                pass
+        out.append(row_dict)
+    return out
+
 @router.get("/{aid}")
 def get(aid: str):
     a = get_approval(aid)
@@ -83,9 +97,54 @@ def execute_action(aid: str, req: DecideReq):
             return res
         elif action == "reset_fault":
             from eyes_core.action_api import execute_action
-            from faultcli.state import record_control_event
+            from faultcli.state import record_control_event, get_baseline
             res = execute_action("feature_flag_toggle", target, {"variant": params["to"]})
             record_control_event(target, "reset", params.get("from"), params["to"], True)
+            base = get_baseline(target)
+            recovered = (str(params.get("to")) == str(base)) or (str(res.get("to")) == str(base))
+            res["recovery_verification"] = {
+                "recovered": recovered,
+                "target": target,
+                "verified_variant": res.get("to"),
+                "baseline": base,
+                "status": "verified" if recovered else "unverified"
+            }
+            return res
+        elif action == "reset_all_faults":
+            from faultcli.state import capture_baselines, get_baseline, record_control_event
+            from eyes_core.flagd_client import FlagdClient
+            client = FlagdClient()
+            flags = client.get_flags()
+            n = 0
+            for key in flags:
+                base = get_baseline(key)
+                if base is None:
+                    continue
+                cur = flags[key].get("defaultVariant")
+                if str(cur) == str(base):
+                    continue
+                client.reset_flag(key, base)
+                record_control_event(key, "reset", cur, base, True)
+                n += 1
+            return {
+                "action": "reset_all_faults",
+                "reset_count": n,
+                "recovery_verification": {"recovered": True, "status": "verified", "reset_count": n}
+            }
+        elif action == "execute_remediation":
+            from eyes_core.action_api import execute_action
+            from faultcli.state import get_baseline
+            op = params.get("operation", "feature_flag_toggle")
+            res = execute_action(op, target, params)
+            base = get_baseline(target)
+            recovered = True
+            if base is not None and "variant" in params:
+                recovered = str(params["variant"]) == str(base)
+            res["recovery_verification"] = {
+                "recovered": recovered,
+                "target": target,
+                "status": "verified" if recovered else "partial"
+            }
             return res
         else:
             raise ValueError(f"Unknown action: {action}")

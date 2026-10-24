@@ -51,6 +51,7 @@ class LLMClient:
             "messages": messages,
             "temperature": temp,
             "max_tokens": mtok,
+            "response_format": {"type": "json_object"},
         }
         last_err = None
         for attempt in range(self.config.max_retries + 1):
