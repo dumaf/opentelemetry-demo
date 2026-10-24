@@ -75,21 +75,18 @@ def execute_action(aid: str, req: DecideReq):
     # Build executor based on action type
     def executor():
         if action == "trigger_fault":
-            from eyes_core.flagd_client import FlagdClient
-            from faultcli.state import record_control_event, get_baseline, capture_baselines
+            from eyes_core.action_api import execute_action
+            from faultcli.state import record_control_event, capture_baselines
             capture_baselines()
-            client = FlagdClient()
-            prev, _ = client.set_variant(target, params["variant"])
-            record_control_event(target, "trigger", prev, params["variant"], True)
-            return {"flag": target, "from": prev, "to": params["variant"]}
+            res = execute_action("feature_flag_toggle", target, {"variant": params["variant"]})
+            record_control_event(target, "trigger", res.get("from"), params["variant"], True)
+            return res
         elif action == "reset_fault":
-            from eyes_core.flagd_client import FlagdClient
+            from eyes_core.action_api import execute_action
             from faultcli.state import record_control_event
-            client = FlagdClient()
-            cur = client.get_flag(target).get("defaultVariant")
-            client.reset_flag(target, params["to"])
-            record_control_event(target, "reset", cur, params["to"], True)
-            return {"flag": target, "from": cur, "to": params["to"]}
+            res = execute_action("feature_flag_toggle", target, {"variant": params["to"]})
+            record_control_event(target, "reset", params.get("from"), params["to"], True)
+            return res
         else:
             raise ValueError(f"Unknown action: {action}")
     try:

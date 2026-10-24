@@ -23,9 +23,9 @@ def run_brain(incident_id: str, detection_mode: str = "controlled", control_even
         "status": inc_row["status"],
         "detection_method": inc_row.get("detection_method", "automatic"),
     }
-    if control_events is None:
-        control_events = fetch_all("control_events", limit=50)
-    bundle = collect(incident, control_events=control_events)
+    # Do NOT pass control events into the diagnostic bundle.
+    # Control/fault metadata must never reach the model input.
+    bundle = collect(incident)
 
     client = LLMClient()
     messages = [

@@ -15,6 +15,8 @@ def _parse(ts: str) -> datetime | None:
         return None
 
 def collect(incident: dict, control_events: list[dict] | None = None) -> dict:
+    # control_events param is accepted for backward compat but intentionally ignored.
+    # Control/fault metadata must never enter the diagnostic evidence bundle.
     det_ts = incident["detection_ts"]
     dt = _parse(det_ts) or datetime.now(timezone.utc)
     start = (dt - timedelta(seconds=EVIDENCE_WINDOW_SECONDS)).isoformat()
@@ -31,7 +33,6 @@ def collect(incident: dict, control_events: list[dict] | None = None) -> dict:
         "metrics": [],
         "traces": [],
         "health": {},
-        "control_events": control_events or [],
         "evidence_refs": [],
     }
 

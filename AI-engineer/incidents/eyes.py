@@ -23,11 +23,8 @@ def run_eyes(incident_id: str, control_events: list[dict] | None = None) -> dict
         "status": inc_row["status"],
         "detection_method": inc_row.get("detection_method", "automatic"),
     }
-    # collect control events separately (not fed as fault identity)
-    if control_events is None:
-        from eyes_core.storage import fetch_all
-        control_events = fetch_all("control_events", limit=50)
-    bundle = collect(incident, control_events=control_events)
+    # Do NOT pass control events into the diagnostic bundle.
+    bundle = collect(incident)
 
     # Build diagnostic input excluding hidden fault identity: only bundle evidence
     client = LLMClient()
