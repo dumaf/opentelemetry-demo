@@ -7,6 +7,8 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
+from .models import compute_plan_digest
+
 
 class HandsStore:
     def __init__(self, directory: Path | str):
@@ -94,10 +96,12 @@ class HandsStore:
             )
 
     def save_plan(self, plan: dict) -> None:
+        if plan.get("plan_digest") != compute_plan_digest(plan):
+            raise ValueError("Plan digest does not match its contents")
         with self.db:
             self.db.execute(
                 """
-                INSERT OR REPLACE INTO plans (plan_digest, incident_id, action_type, target, created_at, data)
+                INSERT OR IGNORE INTO plans (plan_digest, incident_id, action_type, target, created_at, data)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (

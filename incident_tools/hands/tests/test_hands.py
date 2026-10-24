@@ -76,6 +76,13 @@ class TestHandsModels(unittest.TestCase):
         with self.assertRaises(ValueError):
             ActionPlan(self.valid_plan, allowed_services={"checkout"})
 
+    def test_invalid_verification_is_rejected_before_dispatch(self):
+        bad = dict(self.valid_plan)
+        bad["verification_criteria"] = {"metric": "error_rate", "threshold": 0.05,
+                                        "min_samples": 0}
+        with self.assertRaises(ValueError):
+            ActionPlan(bad, allowed_services={"payment"})
+
 
 class TestKillSwitch(unittest.TestCase):
     def setUp(self):
@@ -123,7 +130,7 @@ class TestApprovalGate(unittest.TestCase):
             "reason": "Disable payment failure flag",
             "confidence": 0.99,
             "risk": "low",
-            "verification_criteria": {"metric": "error_rate", "threshold": 0.01},
+            "verification_criteria": {"metric": "error_rate", "threshold": 0.01, "min_samples": 2},
         }
         self.plan = ActionPlan(self.plan_dict)
         self.store.save_plan(self.plan.to_dict())
@@ -187,14 +194,29 @@ class TestApprovalGate(unittest.TestCase):
 
 
 class TestRecoveryVerifier(unittest.TestCase):
-    def test_recovered_when_samples_below_threshold(self):
+    def test_invalid_criteria_cannot_claim_recovery(self):
         def fake_query(service, metric, start, end):
+            self.fail("Invalid verification criteria must not query telemetry")
+
+        verifier = RecoveryVerifier(query_fn=fake_query)
+        for criteria in ({"metric": "error_rate", "threshold": 0.05, "min_samples": 0},
+                         {"metric": "error_rate", "threshold": float("nan"), "min_samples": 1},
+                         {"metric": "unknown", "threshold": 0.05, "min_samples": 1},
+                         {"metric": "error_rate", "min_samples": 1}):
+            with self.subTest(criteria=criteria):
+                res = verifier.verify("inc", "digest", utc_now_iso(), criteria, "payment")
+                self.assertEqual(res.verdict, VerificationResult.INCONCLUSIVE)
+
+    def test_recovered_when_samples_below_threshold(self):
+        action_time = (datetime.now(timezone.utc) - timedelta(seconds=20)).isoformat().replace("+00:00", "Z")
+        def fake_query(service, metric, start, end):
+            begin = datetime.fromisoformat(start.replace("Z", "+00:00"))
             return {
                 "status": "ok",
                 "observations": [{
                     "samples": [
-                        {"timestamp": "2026-10-24T10:00:05Z", "value": "0.01"},
-                        {"timestamp": "2026-10-24T10:00:10Z", "value": "0.00"},
+                        {"timestamp": (begin + timedelta(seconds=5)).isoformat(), "value": "0.01"},
+                        {"timestamp": (begin + timedelta(seconds=10)).isoformat(), "value": "0.00"},
                     ]
                 }],
             }
@@ -203,20 +225,22 @@ class TestRecoveryVerifier(unittest.TestCase):
         res = verifier.verify(
             incident_id="inc-1",
             plan_digest="hash123",
-            action_time_iso="2026-10-24T10:00:00Z",
+            action_time_iso=action_time,
             criteria={"metric": "error_rate", "threshold": 0.05, "min_samples": 2, "settling_period_seconds": 0.0},
             target_service="payment",
         )
         self.assertEqual(res.verdict, VerificationResult.RECOVERED)
 
     def test_not_recovered_when_threshold_exceeded(self):
+        action_time = (datetime.now(timezone.utc) - timedelta(seconds=20)).isoformat().replace("+00:00", "Z")
         def fake_query(service, metric, start, end):
+            begin = datetime.fromisoformat(start.replace("Z", "+00:00"))
             return {
                 "status": "ok",
                 "observations": [{
                     "samples": [
-                        {"timestamp": "2026-10-24T10:00:05Z", "value": "0.15"},
-                        {"timestamp": "2026-10-24T10:00:10Z", "value": "0.12"},
+                        {"timestamp": (begin + timedelta(seconds=5)).isoformat(), "value": "0.15"},
+                        {"timestamp": (begin + timedelta(seconds=10)).isoformat(), "value": "0.12"},
                     ]
                 }],
             }
@@ -225,7 +249,7 @@ class TestRecoveryVerifier(unittest.TestCase):
         res = verifier.verify(
             incident_id="inc-1",
             plan_digest="hash123",
-            action_time_iso="2026-10-24T10:00:00Z",
+            action_time_iso=action_time,
             criteria={"metric": "error_rate", "threshold": 0.05, "min_samples": 2, "settling_period_seconds": 0.0},
             target_service="payment",
         )
@@ -240,17 +264,12 @@ class TestHandsExecutor(unittest.TestCase):
         self.gate = ApprovalGate(self.store, self.kill_switch)
         self.adapter = ActionApiAdapter({"mode": "mock"})
 
-        def fake_query(service, metric, start, end):
-            return {
-                "status": "ok",
-                "observations": [{
-                    "samples": [
-                        {"timestamp": "2026-10-24T10:00:05Z", "value": "0.01"},
-                    ]
-                }],
-            }
+        class FakeVerifier:
+            def verify(self, incident_id, plan_digest, **kwargs):
+                return VerificationResult(VerificationResult.RECOVERED, incident_id, plan_digest,
+                                          utc_now_iso(), [], "Mock recovery verdict")
 
-        self.verifier = RecoveryVerifier(query_fn=fake_query)
+        self.verifier = FakeVerifier()
         self.executor = HandsExecutor(self.store, self.gate, self.kill_switch, self.adapter, self.verifier)
 
         self.plan_dict = {
@@ -304,6 +323,19 @@ class TestHandsExecutor(unittest.TestCase):
         self.assertFalse(res2["success"])
         self.assertEqual(res2["status"], "unauthorized")
         self.assertIn("already been dispatched", res2["message"])
+
+    def test_adapter_exception_is_audited_as_unknown(self):
+        self.gate.record_decision(self.plan.incident_id, self.plan.digest, "approved", "alice")
+
+        def fail(**kwargs):
+            raise TimeoutError("remote outcome unknown")
+
+        self.adapter.execute = fail
+        result = self.executor.dispatch(self.plan)
+        self.assertEqual(result["status"], "action_outcome_unknown")
+        self.assertTrue(self.store.is_dispatched(self.plan.digest))
+        self.assertEqual(self.store.list_audits()[0]["status"], "unknown")
+        self.assertIsNone(self.store.get_verification(self.plan.incident_id, self.plan.digest))
 
 
 if __name__ == "__main__":

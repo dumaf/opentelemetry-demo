@@ -5,7 +5,10 @@
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import re
+
+from incident_tools.f02.boundary import identifier
 
 
 class ActionCategory:
@@ -27,19 +30,8 @@ def utc_now_iso() -> str:
 
 
 def compute_plan_digest(plan: dict) -> str:
-    canonical = {
-        "incident_id": str(plan.get("incident_id", "")),
-        "action_type": str(plan.get("action_type", "")),
-        "target": str(plan.get("target", "")),
-        "parameters": plan.get("parameters", {}),
-        "reason": str(plan.get("reason", "")),
-        "confidence": round(float(plan.get("confidence", 0.0)), 4),
-        "risk": str(plan.get("risk", "low")),
-        "preconditions": plan.get("preconditions", []),
-        "verification_criteria": plan.get("verification_criteria", {}),
-        "rollback_action": plan.get("rollback_action"),
-    }
-    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    canonical = {key: value for key, value in plan.items() if key not in ("plan_digest", "created_at")}
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -76,9 +68,16 @@ def validate_plan_structure(plan: dict, allowed_services: set[str] | None = None
         if target not in allowed_services:
             raise ValueError(f"Target service '{target}' is not in allowlisted services")
 
-    confidence = float(plan["confidence"])
-    if not (0.0 <= confidence <= 1.0):
-        raise ValueError("Confidence must be a float between 0.0 and 1.0")
+    confidence = plan["confidence"]
+    if confidence not in ("low", "medium", "high"):
+        if isinstance(confidence, bool):
+            raise ValueError("Confidence must be categorical or a number between 0 and 1")
+        try:
+            numeric = float(confidence)
+        except (TypeError, ValueError):
+            raise ValueError("Confidence must be categorical or a number between 0 and 1") from None
+        if not math.isfinite(numeric) or not 0.0 <= numeric <= 1.0:
+            raise ValueError("Confidence must be categorical or a number between 0 and 1")
 
     risk = plan["risk"]
     if risk not in ("low", "medium", "high"):
@@ -101,6 +100,23 @@ def validate_plan_structure(plan: dict, allowed_services: set[str] | None = None
     crit = plan["verification_criteria"]
     if not isinstance(crit, dict):
         raise ValueError("Verification criteria must be a dictionary")
+    if crit.get("metric") not in ("error_rate", "latency_p95_ms"):
+        raise ValueError("Verification metric must be error_rate or latency_p95_ms")
+    try:
+        threshold = float(crit["threshold"])
+        min_samples = int(crit["min_samples"])
+        min_requests = float(crit.get("min_requests", 0))
+        settling = float(crit.get("settling_period_seconds", 0))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        raise ValueError("Verification criteria require numeric threshold and sample count") from None
+    if (not all(math.isfinite(value) for value in (threshold, min_requests, settling)) or
+            threshold < 0 or min_samples < 1 or min_requests < 0 or settling < 0):
+        raise ValueError("Verification criteria contain invalid limits")
+    service = crit.get("service", target)
+    if not identifier(service):
+        raise ValueError("Invalid verification service")
+    if allowed_services is not None and service not in allowed_services:
+        raise ValueError("Verification service is outside the allowlist")
 
 
 class ActionPlan:
@@ -129,8 +145,9 @@ class ActionPlan:
         return self.data["parameters"]
 
     @property
-    def confidence(self) -> float:
-        return float(self.data["confidence"])
+    def confidence(self) -> float | str:
+        value = self.data["confidence"]
+        return value if value in ("low", "medium", "high") else float(value)
 
     @property
     def digest(self) -> str:

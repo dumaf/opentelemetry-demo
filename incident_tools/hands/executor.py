@@ -1,8 +1,10 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
-"""Main coordinator for Hands: gatekeeping, dispatch, audit, verification, and rollback."""
+"""Main coordinator for Hands: gatekeeping, dispatch, audit, and verification."""
 
 import uuid
+
+from incident_tools.f02.boundary import timestamp
 
 from .adapter import ActionApiAdapter
 from .approval import ApprovalGate
@@ -29,6 +31,12 @@ class HandsExecutor:
 
     def dispatch(self, plan: ActionPlan, dry_run: bool = False) -> dict:
         now_iso = utc_now_iso()
+
+        if self.adapter.mode not in ("mock", "http") or (self.adapter.mode == "http" and not self.adapter.live_enabled):
+            return {"success": False, "status": "adapter_disabled", "message": "A configured Action API is required; direct Docker and faultctl actions are disabled."}
+        valid_until = plan.data.get("valid_until")
+        if valid_until and timestamp(now_iso) >= timestamp(valid_until):
+            return {"success": False, "status": "stale_plan", "message": "Plan evidence expired; analyze fresh Eyes evidence before approval."}
 
         # 1. Verification of Human Authorization
         authorized, reason = self.approval_gate.verify_authorization(plan, current_iso=now_iso)
@@ -73,12 +81,19 @@ class HandsExecutor:
         )
 
         # 5. Execute Action through Adapter
-        exec_res = self.adapter.execute(
-            action_type=plan.action_type,
-            target=plan.target,
-            parameters=plan.parameters,
-            idempotency_key=attempt_id,
-        )
+        try:
+            exec_res = self.adapter.execute(
+                action_type=plan.action_type,
+                target=plan.target,
+                parameters=plan.parameters,
+                idempotency_key=attempt_id,
+            )
+        except Exception:
+            exec_res = {
+                "dispatched_at": now_iso, "status": "unknown", "duration_ms": 0.0,
+                "response_data": {},
+                "error_message": "Action outcome unknown; inspect the action system before any new plan.",
+            }
 
         # 6. Save Audit Record
         audit_record = {
@@ -99,8 +114,8 @@ class HandsExecutor:
         if exec_res["status"] != "ok":
             return {
                 "success": False,
-                "status": "action_failed",
-                "message": f"Action execution failed: {exec_res.get('error_message')}",
+                "status": "action_outcome_unknown" if exec_res["status"] == "unknown" else "action_failed",
+                "message": exec_res.get("error_message") or "Action API did not confirm completion.",
                 "incident_id": plan.incident_id,
                 "plan_digest": plan.digest,
                 "attempt": audit_record,
@@ -113,38 +128,9 @@ class HandsExecutor:
             plan_digest=plan.digest,
             action_time_iso=exec_res["dispatched_at"],
             criteria=criteria,
-            target_service=plan.target,
+            target_service=criteria.get("service", plan.target),
         )
         self.store.save_verification(verif_res.to_dict())
-
-        # 8. Handle Rollback if Not Recovered
-        rollback_executed = False
-        rollback_result = None
-
-        if verif_res.verdict == VerificationResult.NOT_RECOVERED:
-            rollback_plan_data = plan.data.get("rollback_action")
-            if rollback_plan_data and not self.kill_switch.is_engaged():
-                rb_attempt_id = f"rb-{uuid.uuid4().hex[:12]}"
-                rollback_result = self.adapter.execute(
-                    action_type=rollback_plan_data.get("action_type", ""),
-                    target=rollback_plan_data.get("target", plan.target),
-                    parameters=rollback_plan_data.get("parameters", {}),
-                    idempotency_key=rb_attempt_id,
-                )
-                rollback_executed = True
-                self.store.save_audit({
-                    "attempt_id": rb_attempt_id,
-                    "incident_id": plan.incident_id,
-                    "plan_digest": plan.digest + "-rollback",
-                    "action_type": rollback_plan_data.get("action_type", ""),
-                    "target": rollback_plan_data.get("target", plan.target),
-                    "parameters": rollback_plan_data.get("parameters", {}),
-                    "dispatched_at": rollback_result["dispatched_at"],
-                    "status": rollback_result["status"],
-                    "duration_ms": rollback_result["duration_ms"],
-                    "response_data": rollback_result["response_data"],
-                    "error_message": rollback_result["error_message"],
-                })
 
         return {
             "success": verif_res.verdict == VerificationResult.RECOVERED,
@@ -153,6 +139,6 @@ class HandsExecutor:
             "plan_digest": plan.digest,
             "action_attempt": audit_record,
             "verification": verif_res.to_dict(),
-            "rollback_executed": rollback_executed,
-            "rollback_result": rollback_result,
+            "rollback_executed": False,
+            "rollback_result": None,
         }

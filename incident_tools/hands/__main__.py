@@ -26,8 +26,11 @@ def load_config(config_path: str) -> dict:
         return tomllib.load(f)
 
 
-def build_components(cfg: dict):
-    data_dir = cfg.get("data_dir", "/tmp/hands-data")
+def build_components(cfg: dict, config_dir: Path | None = None):
+    base = config_dir or Path.cwd()
+    data_dir = Path(cfg.get("data_dir", "/tmp/hands-data"))
+    if not data_dir.is_absolute():
+        data_dir = base / data_dir
     store = HandsStore(data_dir)
     kill_switch = KillSwitch(store)
     approval_gate = ApprovalGate(store, kill_switch)
@@ -38,6 +41,8 @@ def build_components(cfg: dict):
 
     # Telemetry query function using f02 if available
     f02_cfg_path = cfg.get("f02_config")
+    if f02_cfg_path and not Path(f02_cfg_path).is_absolute():
+        f02_cfg_path = str(base / f02_cfg_path)
     query_fn = None
     if f02_cfg_path and Path(f02_cfg_path).exists():
         try:
@@ -103,7 +108,8 @@ def main() -> int:
 
     try:
         cfg = load_config(args.config)
-        store, kill_switch, approval_gate, adapter, verifier, executor = build_components(cfg)
+        store, kill_switch, approval_gate, adapter, verifier, executor = build_components(
+            cfg, Path(args.config).resolve().parent)
 
         if args.command == "status":
             ks = kill_switch.status()

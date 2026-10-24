@@ -1,8 +1,8 @@
 # Hands: Action Execution, Safety Gate & Recovery Verification
 
-Hands delivers **Checkpoint 3 (M6: The agent can act safely)** from `ProblemStatement.md` and `ImplementationPlan.md`.
+Hands provides a draft Checkpoint 3 implementation. Live acceptance requires an approved Action API and observed recovery; offline tests alone do not complete M6.
 
-It provides the actuation and safety layer that executes approved remediation plans against the OpenTelemetry Demo environment, guarded by strict deterministic safety controls.
+It provides an approval gate, audit store, Action API client, and telemetry verifier for proposed remediation plans. The supplied mock mode is for offline testing; no live Action API has been validated.
 
 ---
 
@@ -34,15 +34,15 @@ It provides the actuation and safety layer that executes approved remediation pl
 [ Recovered ]    [ Not Recovered ]
                        │
                        ▼
-                 Rollback / Escalation
+                    Escalation
 ```
 
 ### Safety Guarantees
-1. **Zero Unapproved Mutations**: The model never has credentials to mutate the environment directly. No action can execute without an explicit operator approval bound to the exact plan SHA-256 digest.
-2. **Durable Kill Switch**: An atomic, persistent latch stored in SQLite. Once engaged, all dispatching, retrying, and rollback operations are blocked immediately across restarts until an operator explicitly resets it.
-3. **Idempotency & Replay Prevention**: Dispatches are recorded before execution. Re-dispatching an already executed plan is blocked.
+1. **Approval Gate**: The model has no action credentials. A proposed action needs an operator approval bound to the plan SHA-256 digest before dispatch.
+2. **Durable Kill Switch**: A persistent latch stored in SQLite blocks dispatch across restarts until an operator resets it. It cannot cancel an action already accepted by a remote API.
+3. **Idempotency & Replay Prevention**: Dispatches are recorded before execution. Re-dispatching a plan is blocked locally; remote API idempotency and timeout outcome still depend on the supplied API contract.
 4. **Target & Parameter Allowlisting**: Services and action types are constrained to the configured allowlist. Arbitrary shell commands and unsupported actions (like scaling in Docker Compose) are strictly rejected.
-5. **Fresh Evidence Verification**: Recovery requires post-action telemetry samples strictly newer than the action timestamp. Stale or pre-action samples are never accepted.
+5. **Fresh Evidence Verification**: Recovery requires distinct post-action evaluation timestamps and continuing traffic when the plan asks for it. Underlying metric source freshness still needs live validation.
 
 ---
 
@@ -50,10 +50,9 @@ It provides the actuation and safety layer that executes approved remediation pl
 
 | Action Type | Target | Description |
 | :--- | :--- | :--- |
-| `restart_service` | Compose service name | Triggers restart of the target service container. |
-| `toggle_feature_flag` | Flag name in `flagd` | Changes flag state (e.g. disables a fault injection flag). |
-| `throttle_load_generator` | `loadgenerator` | Modifies Locust user count / spawn rate to ease saturation. |
-| `scale_service` | Service name | Disabled in Docker Compose (requires Kubernetes). |
+| `restart_service` | Allowlisted service name | Proposed by the integration pipeline; mockable offline. An approved HTTP Action API is required for live dispatch. |
+| `toggle_feature_flag`, `throttle_load_generator` | Flag or load generator | Present in the inherited plan vocabulary; live dispatch is disabled. |
+| `scale_service` | Service name | Rejected by plan validation. |
 
 ---
 
@@ -66,9 +65,10 @@ cp incident_tools/hands/operator.example.toml /tmp/hands-operator.toml
 
 Key sections:
 * `data_dir`: Directory for `hands.sqlite` (plans, approvals, audit logs, and kill latch).
-* `adapter.mode`: `"local_docker"` (live environment), `"http"` (Action API service), or `"mock"` (testing).
+* `adapter.mode`: `"mock"` (default, offline testing) or `"http"` (approved Action API only). The inherited `local_docker` path is disabled because it bypasses that API.
+* HTTP live mode requires `enable_live_actions = true`, an explicit approved `api_url`, and `api_token_env` naming an exported token. An official endpoint, response and idempotency contract must be checked before use.
 * `safety.services`: List of permissible target services.
-* `verification.settling_period_seconds`: Delay after action before querying recovery metrics.
+* Each plan's `verification_criteria` sets the settling delay, affected service, metric, threshold, minimum samples and traffic requirement.
 
 ---
 
@@ -101,11 +101,12 @@ python3 -m incident_tools.hands --config /tmp/hands-operator.toml dispatch \
   --dry-run
 ```
 
-### Execute Approved Action & Verify Recovery
+### Dispatch Approved Action & Verify Recovery
 ```sh
 python3 -m incident_tools.hands --config /tmp/hands-operator.toml dispatch \
   --digest <PLAN_DIGEST>
 ```
+With the example configuration this uses the mock adapter; the action result is synthetic. Live dispatch needs the approved Action API configuration described above. An inconclusive verification does not establish recovery. Automatic rollback is disabled.
 
 ### Emergency Stop (Kill Switch)
 ```sh

@@ -5,8 +5,11 @@ f02_config = "/tmp/f02-operator.toml"
 data_dir = "/tmp/hands-data"
 
 [adapter]
-mode = "local_docker" # "local_docker", "http", or "mock"
+mode = "mock" # Change to "http" only for an approved Action API.
+enable_live_actions = false
 api_url = "http://localhost:8080/action/api"
+# For an approved Action API only: set mode = "http", enable_live_actions = true,
+# api_token_env = "HANDS_ACTION_API_TOKEN", and configure the verified endpoint.
 timeout_seconds = 15.0
 compose_project = "opentelemetry-demo"
 locust_url = "http://localhost:8080/loadgen"
