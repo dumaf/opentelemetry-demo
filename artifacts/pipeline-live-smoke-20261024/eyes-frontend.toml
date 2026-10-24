@@ -1,0 +1,33 @@
+f02_config = "/tmp/eyes-operator/f02.toml"
+artifact_dir = "/tmp/eyes-brain-hands-frontend-20261024/eyes"
+
+[workflow]
+services = ["frontend"]
+poll_seconds = 15
+window_seconds = 300
+warmup_seconds = 30
+consecutive_breaches = 2
+max_age_seconds = 90
+min_requests = 10
+max_calls = 8
+max_seconds = 120
+per_call_limit = 1
+
+[workflow.thresholds]
+latency_p95_ms = 1000
+
+[models]
+route = "cloud-only"
+
+[models.cloud]
+enabled = true
+backend = "openai-compatible"
+endpoint = "https://api.openai.com/v1"
+model = "gpt-4.1-mini"
+api_key_env = "OPENAI_API_KEY"
+timeout_seconds = 60
+retries = 1
+requests_per_minute = 12
+max_output_tokens = 2048
+context_chars = 48000
+temperature = 0.0

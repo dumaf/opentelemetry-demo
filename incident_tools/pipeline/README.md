@@ -1,6 +1,7 @@
 # Eyes → Brain → Hands integration
 
-This branch retains `main`'s Eyes/F02 code unchanged. The pipeline reads an Eyes
+This branch builds on `main`'s Eyes/F02 implementation. Eyes now includes a bounded
+decision-envelope correction and explicit failure codes; F02 is unchanged. The pipeline reads an Eyes
 `checkpoint1_execution_log.json`, runs Brain's fact extraction, diagnosis,
 claim validation and draft report builder, then prepares a Hands plan only for a
 fresh, directly observed stopped container supported by a high-confidence
@@ -28,6 +29,24 @@ Eyes execution record, runs Brain, then registers only an eligible Hands plan.
 It prints Eyes poll/export events and each pipeline handoff. `--polls 1` limits
 the watcher to one Eyes poll for a smoke test; zero runs until interrupted.
 Nothing is dispatched by the watcher.
+
+The watcher only picks up queued incidents. To retry a queued or incomplete
+investigation explicitly and carry its new export through Brain and the Hands
+handoff, use the saved incident ID:
+
+```bash
+python3 -B -m incident_tools.pipeline \
+  --eyes-config /tmp/eyes-operator/eyes.toml \
+  --hands-config /tmp/hands-operator.toml \
+  --investigate INCIDENT_ID \
+  --output-root /tmp/eyes-brain-hands-retries
+```
+
+This starts a new investigation attempt for that incident, preserves earlier
+exports, and retains the existing operator lock and action gates. Finished or
+interrupted `running` investigations cannot be retried through this option.
+The handoff's `eyes_failure` contains the new Eyes failure metadata, or `null`
+for a successful attempt or a legacy export without that field.
 
 ## Analyze one existing Eyes incident
 

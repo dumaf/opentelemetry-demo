@@ -164,6 +164,121 @@ class EyesTests(unittest.TestCase):
         run = Investigator(self.tools, self.store, AdaptiveModel('restart'), self.settings).run(incident)
         self.assertEqual(len(self.tools.calls), before)
         self.assertEqual(run['stop_reason'], 'invalid_decision_or_provider_failure')
+        self.assertEqual(run['failure']['code'], 'tool_not_allowed')
+
+    def test_wrong_action_is_repaired_once_before_adaptive_tool_execution(self):
+        class RepairModel:
+            def __init__(inner):
+                inner.calls = []
+
+            def decide(inner, messages, remaining):
+                inner.calls.append(deepcopy(messages))
+                incident = json.loads(messages[1]['content'])['incident']
+                args = {'service': 'checkout', **incident['window']}
+                count = len(inner.calls)
+                if count <= 3:
+                    if count < 3:
+                        args['metric'] = 'latency_p95_ms'
+                    return {'action': 'query_metrics' if count == 1 else 'tool',
+                            'tool': 'search_logs' if count == 3 else 'query_metrics',
+                            'arguments': args, 'rationale': 'Inspect observed timeout symptoms'}, {'model': 'fixture'}
+                prior = json.loads(messages[-1]['content'])
+                return {'action': 'finish', 'interpretations': [
+                    {'text': 'Timeout symptoms observed', 'evidence_ids': [prior['evidence_id']]}],
+                    'limitations': []}, {'model': 'fixture'}
+
+        model = RepairModel()
+        run = Investigator(self.tools, self.store, model, self.settings).run(self.incident())
+        self.assertEqual(run['stop_reason'], 'model_finished')
+        self.assertEqual(run['model_calls'], 4)
+        self.assertEqual([e['tool'] for e in run['evidence']], ['query_metrics', 'search_logs'])
+        self.assertEqual(len(run['rejected_decisions']), 1)
+        self.assertEqual(run['rejected_decisions'][0]['code'], 'invalid_action')
+        self.assertEqual(json.loads(model.calls[1][-1]['content'])['decision_format_error'], 'invalid_action')
+        self.assertTrue(run['decisions'][1]['based_on_evidence'])
+        self.assertIsNone(run['failure'])
+
+    def test_repeated_bad_envelopes_stop_after_one_repair_without_executing_tools(self):
+        class BadModel:
+            def decide(inner, *args):
+                return {'action': 'query_metrics', 'tool': 'query_metrics'}, {'model': 'fixture'}
+
+        incident = self.incident()
+        before = len(self.tools.calls)
+        run = Investigator(self.tools, self.store, BadModel(), self.settings).run(incident)
+        self.assertEqual(run['model_calls'], 2)
+        self.assertEqual(len(run['rejected_decisions']), 2)
+        self.assertEqual(len(self.tools.calls), before)
+        self.assertEqual(run['failure']['code'], 'invalid_action')
+        self.assertEqual(self.store.incidents()[0]['investigation'], 'incomplete')
+
+    def test_format_repair_cannot_authorize_an_unknown_tool(self):
+        class BadModel:
+            def __init__(inner):
+                inner.calls = 0
+
+            def decide(inner, messages, remaining):
+                inner.calls += 1
+                incident = json.loads(messages[1]['content'])['incident']
+                return {'action': 'restart' if inner.calls == 1 else 'tool', 'tool': 'restart',
+                        'arguments': {'service': 'checkout', **incident['window']},
+                        'rationale': 'Untrusted model request'}, {'model': 'fixture'}
+
+        incident = self.incident()
+        before = len(self.tools.calls)
+        run = Investigator(self.tools, self.store, BadModel(), self.settings).run(incident)
+        self.assertEqual(run['model_calls'], 2)
+        self.assertEqual(len(self.tools.calls), before)
+        self.assertEqual(run['failure']['code'], 'tool_not_allowed')
+
+    def test_repair_allowance_is_shared_across_the_entire_investigation(self):
+        class BadAgain:
+            def __init__(inner):
+                inner.calls = 0
+
+            def decide(inner, messages, remaining):
+                inner.calls += 1
+                incident = json.loads(messages[1]['content'])['incident']
+                return {'action': 'tool' if inner.calls == 2 else 'search_logs', 'tool': 'search_logs',
+                        'arguments': {'service': 'checkout', **incident['window']},
+                        'rationale': 'Inspect logs'}, {'model': 'fixture'}
+
+        run = Investigator(self.tools, self.store, BadAgain(), self.settings).run(self.incident())
+        self.assertEqual(run['model_calls'], 3)
+        self.assertEqual(len(run['evidence']), 1)
+        self.assertEqual(len(run['rejected_decisions']), 2)
+        self.assertEqual(run['failure']['code'], 'invalid_action')
+
+    def test_format_repair_still_obeys_overall_time_budget(self):
+        elapsed = [0]
+
+        class BadModel:
+            def decide(inner, *args):
+                elapsed[0] = 121
+                return {'action': 'query_metrics'}, {'model': 'fixture'}
+
+        incident = self.incident()
+        with patch('incident_tools.eyes.core.time.monotonic', side_effect=lambda: elapsed[0]):
+            run = Investigator(self.tools, self.store, BadModel(), self.settings).run(incident)
+        self.assertEqual(run['stop_reason'], 'time_budget')
+        self.assertEqual(run['model_calls'], 1)
+        self.assertEqual(run['evidence'], [])
+
+    def test_finish_citations_are_checked_before_retaining_any_interpretations(self):
+        class BadModel(AdaptiveModel):
+            def decide(inner, messages, remaining):
+                if not inner.calls:
+                    return super().decide(messages, remaining)
+                prior = json.loads(messages[-1]['content'])
+                return {'action': 'finish', 'interpretations': [
+                    {'text': 'Observed symptom', 'evidence_ids': [prior['evidence_id']]},
+                    {'text': 'Invented symptom', 'evidence_ids': ['invented']}],
+                    'limitations': []}, {'model': 'fixture'}
+
+        run = Investigator(self.tools, self.store, BadModel(), self.settings).run(self.incident())
+        self.assertEqual(run['interpretations'], [])
+        self.assertEqual(run['failure']['code'], 'unsupported_evidence_reference')
+        self.assertEqual(run['rejected_decisions'], [])
 
     def test_unknown_citation_rejected(self):
         class BadModel:

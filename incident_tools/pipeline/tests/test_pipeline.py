@@ -2,11 +2,13 @@
 
 from datetime import timedelta
 from contextlib import redirect_stdout
+from copy import deepcopy
 import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from incident_tools.brain import extract, load_run
 from incident_tools.brain.tests.test_brain import full_run
@@ -20,6 +22,7 @@ from incident_tools.hands.store import HandsStore
 from incident_tools.hands.verifier import RecoveryVerifier
 from incident_tools.pipeline import analyze
 from incident_tools.pipeline.workflow import watch_eyes
+from incident_tools.pipeline.__main__ import main
 
 
 class FakeRouter:
@@ -133,6 +136,62 @@ class TestPipeline(unittest.TestCase):
                 self.assertEqual(result["hands_status"], "escalated")
                 self.assertIsNone(result["plan_digest"])
                 self.assertFalse(hands_dir.exists())
+
+    def test_incomplete_eyes_failure_is_preserved_without_model_call_or_plan(self):
+        data = deepcopy(self.data)
+        data.update(evidence=[], stop_reason='invalid_decision_or_provider_failure',
+                    failure={'code': 'invalid_action', 'step': 0})
+
+        class UnusedRouter:
+            def decide(inner, *args):
+                self.fail('Brain must not call the model without observations')
+
+        result = analyze(data, UnusedRouter(), self.root / 'incomplete', self.root / 'hands',
+                         {'checkout'}, self.now)
+        self.assertEqual(result['eyes_failure'], {'code': 'invalid_action', 'step': 0})
+        self.assertEqual(result['brain_status'], 'escalated')
+        self.assertEqual(result['report_validation'], 'valid')
+        self.assertEqual(result['reason'], 'Eyes investigation is incomplete')
+        self.assertIsNone(result['plan_digest'])
+        self.assertFalse((self.root / 'hands').exists())
+
+    def test_explicit_investigation_command_also_enters_brain(self):
+        eyes_root = self.root / 'eyes'
+        export_dir = eyes_root / 'retry'
+        export_dir.mkdir(parents=True)
+        (export_dir / 'checkpoint1_execution_log.json').write_text(json.dumps(self.data))
+        commands = []
+
+        class Process:
+            stdout = io.StringIO(json.dumps({'artifacts': str(export_dir)}) + '\n')
+            def wait(inner):
+                return 0
+            def poll(inner):
+                return 0
+
+        def launch(command, **kwargs):
+            commands.append(command)
+            return Process()
+
+        with redirect_stdout(io.StringIO()):
+            status = watch_eyes('eyes.toml', eyes_root, FakeRouter(self.refs), self.root / 'analyses',
+                                self.root / 'hands', {'checkout'}, launch=launch,
+                                incident_id=self.data['incident']['id'])
+        self.assertEqual(status, 0)
+        self.assertEqual(commands[0][-3:], ['investigate', '--id', self.data['incident']['id']])
+        self.assertEqual(len(list((self.root / 'analyses').glob('*/pipeline_handoff.json'))), 1)
+
+    def test_cli_passes_explicit_incident_to_connected_workflow(self):
+        hands_file = self.root / 'hands.toml'
+        hands_file.write_text('data_dir = "hands-state"\n[adapter]\nmode = "mock"\n'
+                              '[safety]\nservices = ["checkout"]\n')
+        with patch('incident_tools.pipeline.__main__.load', return_value=({'models': {}}, {}, 'f02.toml', 'eyes')), \
+                patch('incident_tools.pipeline.__main__.Router'), \
+                patch('incident_tools.pipeline.__main__.watch_eyes', return_value=0) as workflow:
+            status = main(['--eyes-config', 'eyes.toml', '--hands-config', str(hands_file),
+                           '--investigate', 'incident-test', '--output-root', str(self.root / 'analyses')])
+        self.assertEqual(status, 0)
+        self.assertEqual(workflow.call_args.kwargs['incident_id'], 'incident-test')
 
     def test_plan_digest_binds_reviewed_fields_and_direct_adapter_is_disabled(self):
         result = analyze(self.data, FakeRouter(self.refs), self.root / "analysis", self.root / "hands",

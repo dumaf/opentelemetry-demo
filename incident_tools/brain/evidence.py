@@ -62,6 +62,7 @@ class Run:
     finished_at: str | None
     unsupported: tuple = field(default=())
     notes: tuple = field(default=())
+    failure: dict | None = None
 
 
 def _require(data, key, kind, where):
@@ -159,4 +160,5 @@ def load_run(source):
         evidence[item.evidence_id] = item
     return Run(incident, evidence, tuple(data.get('decisions', [])), tuple(data.get('interpretations', [])),
                tuple(x for x in data.get('limitations', []) if isinstance(x, str)), stop_reason,
-               data.get('origin'), data.get('finished_at'), tuple(unsupported), tuple(notes))
+               data.get('origin'), data.get('finished_at'), tuple(unsupported), tuple(notes),
+               data.get('failure') if isinstance(data.get('failure'), dict) else None)

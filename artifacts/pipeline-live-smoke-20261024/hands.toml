@@ -1,0 +1,11 @@
+f02_config = "/tmp/eyes-operator/f02.toml"
+data_dir = "/tmp/eyes-brain-hands-live-20261024/hands"
+
+[adapter]
+mode = "mock"
+enable_live_actions = false
+
+[safety]
+services = ["checkout", "shipping"]
+require_explicit_approval = true
+allow_scaling = false

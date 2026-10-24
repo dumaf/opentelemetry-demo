@@ -100,6 +100,7 @@ def analyze(eyes_record, router, output_dir, hands_dir, allowed_services, now=No
     (destination / "brain_report.md").write_text(render_markdown(report), encoding="utf-8")
     handoff = {"incident_id": run.incident["id"], "eyes_origin": run.origin,
                "eyes_stop_reason": run.stop_reason, "brain_status": diagnosis.status,
+               "eyes_failure": run.failure,
                "claim_validation": validation.status, "report_validation": report_check.status,
                "hands_status": "escalated", "plan_digest": None, "reason": reason,
                "live_acceptance_complete": False,
@@ -118,13 +119,13 @@ def analyze(eyes_record, router, output_dir, hands_dir, allowed_services, now=No
 
 
 def watch_eyes(eyes_config, eyes_artifact_dir, router, output_root, hands_dir,
-               allowed_services, polls=0, launch=subprocess.Popen):
-    """Follow completed Eyes exports while Eyes owns detection and investigation."""
+               allowed_services, polls=0, launch=subprocess.Popen, incident_id=None):
+    """Follow Eyes watch or an explicit queued/incomplete incident investigation."""
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
     eyes_root = Path(eyes_artifact_dir).resolve()
-    command = [sys.executable, "-B", "-m", "incident_tools.eyes", "--config",
-               str(eyes_config), "watch", "--polls", str(polls)]
+    command = [sys.executable, "-B", "-m", "incident_tools.eyes", "--config", str(eyes_config)]
+    command += ["investigate", "--id", incident_id] if incident_id else ["watch", "--polls", str(polls)]
     process = launch(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                      text=True, bufsize=1)
     failures = 0
