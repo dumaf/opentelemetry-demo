@@ -1,0 +1,48 @@
+graph LR
+  subgraph Upstream["Upstream OpenTelemetry Demo (unchanged)"]
+    flagd[flagd]
+    flagdui[flagd-ui]
+    collector[OTel Collector]
+    prom[Prometheus]
+    jaeger[Jaeger]
+    os[OpenSearch]
+    grafana[Grafana]
+    services[Demo services]
+  end
+
+  subgraph New["New: AI-engineer (Eyes)"]
+    faultcli[FaultCLI]
+    adapters[Telemetry Adapters]
+    detector[Blind Detection Engine]
+    evidence[Evidence Collector/Correlator]
+    llm[Cloud LLM Client]
+    eyes[Eyes Workflow]
+    backend[FastAPI Backend]
+    frontend[React Frontend]
+    brain[Brain Diagnoser]
+    db[(SQLite)]
+  end
+
+  faultcli -->|read/write REST| flagdui
+  flagdui -->|file mount| flagd
+  services -->|OTLP| collector
+  collector -->|metrics| prom
+  collector -->|traces| jaeger
+  collector -->|logs| os
+  adapters -->|query| prom
+  adapters -->|query| jaeger
+  adapters -->|query| os
+  detector -->|uses| adapters
+  detector -->|creates| db
+  evidence -->|uses| adapters
+  evidence -->|stores| db
+  eyes -->|uses| evidence
+  eyes -->|calls| llm
+  brain -->|uses| evidence
+  brain -->|calls| llm
+  brain -->|evaluates separately| db
+  eyes -->|stores report| db
+  backend -->|orchestrates| faultcli
+  backend -->|orchestrates| detector
+  backend -->|orchestrates| eyes
+  frontend -->|REST| backend

@@ -1,0 +1,120 @@
+"""Approval workflow endpoints."""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from eyes_core.approval import (propose, approve, reject, execute, get_approval,
+    list_pending, is_kill_switch_enabled, set_kill_switch, audit, classify)
+from eyes_core.storage import fetch_all
+
+router = APIRouter()
+
+class ProposeReq(BaseModel):
+    action: str
+    target: str
+    params: dict = {}
+    reason: str = ""
+    risk: str = "medium"
+    reversible: bool = True
+
+class DecideReq(BaseModel):
+    actor: str = "human"
+    reason: str = ""
+
+@router.post("/propose")
+def propose_action(req: ProposeReq):
+    try:
+        return propose(req.action, req.target, req.params, req.reason, req.risk, req.reversible)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+@router.get("")
+def list_approvals():
+    return list_pending()
+
+@router.get("/all")
+def list_all():
+    return fetch_all("approvals", limit=200)
+
+@router.get("/{aid}")
+def get(aid: str):
+    a = get_approval(aid)
+    if not a:
+        raise HTTPException(404, "Not found")
+    return a
+
+@router.post("/{aid}/approve")
+def approve_action(aid: str, req: DecideReq):
+    try:
+        return approve(aid, req.actor)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+@router.post("/{aid}/reject")
+def reject_action(aid: str, req: DecideReq):
+    try:
+        return reject(aid, req.actor, req.reason)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+@router.post("/{aid}/execute")
+def execute_action(aid: str, req: DecideReq):
+    from eyes_core.approval import get_approval, execute
+    a = get_approval(aid)
+    if not a:
+        raise HTTPException(404, "Not found")
+    action = a["action"]
+    target = a["target"]
+    params = a["params"]
+    # Build executor based on action type
+    def executor():
+        if action == "trigger_fault":
+            from eyes_core.flagd_client import FlagdClient
+            from faultcli.state import record_control_event, get_baseline, capture_baselines
+            capture_baselines()
+            client = FlagdClient()
+            prev, _ = client.set_variant(target, params["variant"])
+            record_control_event(target, "trigger", prev, params["variant"], True)
+            return {"flag": target, "from": prev, "to": params["variant"]}
+        elif action == "reset_fault":
+            from eyes_core.flagd_client import FlagdClient
+            from faultcli.state import record_control_event
+            client = FlagdClient()
+            cur = client.get_flag(target).get("defaultVariant")
+            client.reset_flag(target, params["to"])
+            record_control_event(target, "reset", cur, params["to"], True)
+            return {"flag": target, "from": cur, "to": params["to"]}
+        else:
+            raise ValueError(f"Unknown action: {action}")
+    try:
+        return execute(aid, params, executor, req.actor)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+@router.get("/kill-switch/status")
+def ks_status():
+    return {"enabled": is_kill_switch_enabled()}
+
+@router.post("/kill-switch/enable")
+def ks_enable(req: DecideReq):
+    set_kill_switch(True, req.reason)
+    return {"enabled": True}
+
+@router.post("/kill-switch/disable")
+def ks_disable(req: DecideReq):
+    set_kill_switch(False, req.reason)
+    return {"enabled": False}
+
+@router.get("/audit")
+def audit_log(limit: int = 100):
+    return fetch_all("audit_log", limit=limit)
+
+@router.get("/classify/{action}")
+def classify_action(action: str):
+    return {"action": action, "classification": classify(action)}

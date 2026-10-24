@@ -1,0 +1,25 @@
+# AI-engineer local artifacts
+data/
+*.db
+*.sqlite
+*.sqlite3
+artifacts/*.json
+artifacts/*.md
+!artifacts/.gitkeep
+.env.model
+venv/
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+frontend/dist/
+frontend/node_modules/
+coverage/
+.DS_Store
+*.log
